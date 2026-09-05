@@ -28,23 +28,6 @@ public enum WindowingStrategy: Sendable, Hashable, Codable {
     case fixed(seconds: TimeInterval, minimumFill: Double)
 }
 
-/// How per-window values are collapsed into one number for the night.
-public enum NightAggregator: Sendable, Hashable, Codable {
-    case median
-    case mean
-    case trimmedMean(fraction: Double)
-    /// Restrict to windows whose dominant stage is in the set, then aggregate.
-    case stageRestricted(stages: [SleepStage], inner: [NightAggregator])
-    /// Windows starting within `minutes` of sleep onset.
-    case afterSleepOnset(minutes: Double, inner: [NightAggregator])
-    /// Windows in the last `minutes` before final awakening.
-    case beforeWake(minutes: Double, inner: [NightAggregator])
-
-    /// Boxed recursion helper — `inner` is a single-element array only because Swift
-    /// enums cannot hold themselves directly without indirection.
-    static func wrap(_ a: NightAggregator) -> [NightAggregator] { [a] }
-}
-
 public struct NightAnalysisConfiguration: Sendable, Hashable, Codable {
     public var preprocessing: PreprocessingConfiguration = .standard
     public var windowing: WindowingStrategy = .nativeSeries

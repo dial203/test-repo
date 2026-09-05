@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  # The analysis core has no Apple dependencies, so its tests run on a Linux runner.
+  # This is the check that actually gates correctness.
+  hrvkit:
+    name: HRVKit tests (Linux)
+    runs-on: ubuntu-latest
+    container: swift:6.0
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift build --build-tests
+      - run: swift test
+
+  apps:
+    name: App build (macOS)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install xcodegen
+      - run: xcodegen generate
+      - name: Build iOS app
+        run: |
+          xcodebuild build \
+            -project Nocturne.xcodeproj \
+            -scheme Nocturne \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO

@@ -1,0 +1,128 @@
+name: Nocturne
+options:
+  bundleIdPrefix: app.nocturne
+  createIntermediateGroups: true
+  deploymentTarget:
+    iOS: "17.0"
+    watchOS: "10.0"
+  groupSortPosition: top
+
+# The analysis core is compiled twice from the same files: as an Xcode framework for the
+# apps, and as a SwiftPM target for `swift test` on Linux CI. One set of sources, no
+# duplication, and the test suite runs without a Mac.
+targets:
+
+  HRVKit:
+    type: framework
+    supportedDestinations: [iOS, watchOS]
+    sources:
+      - path: Sources/HRVKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.nocturne.HRVKit
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        DEFINES_MODULE: "YES"
+
+  HRVKitTests:
+    type: bundle.unit-test
+    supportedDestinations: [iOS]
+    sources:
+      - path: Tests/HRVKitTests
+    dependencies:
+      - target: HRVKit
+    settings:
+      base:
+        SWIFT_VERSION: "6.0"
+
+  Nocturne:
+    type: application
+    supportedDestinations: [iOS]
+    sources:
+      - path: Apps/Nocturne
+      - path: Apps/Shared
+    dependencies:
+      - target: HRVKit
+        embed: true
+      - target: NocturneWatch
+        embed: true
+        codeSign: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.nocturne.Nocturne
+        PRODUCT_NAME: Nocturne
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.0"
+        INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
+        TARGETED_DEVICE_FAMILY: "1,2"
+    info:
+      path: Apps/Nocturne/Resources/Info.plist
+      properties:
+        CFBundleDisplayName: Nocturne
+        UIBackgroundModes:
+          - bluetooth-central
+          - processing
+        NSHealthShareUsageDescription: >-
+          Nocturne reads the beat-to-beat intervals your Apple Watch records overnight,
+          plus your sleep stages, to calculate heart rate variability. Everything stays
+          on this device.
+        NSHealthUpdateUsageDescription: >-
+          Nocturne saves beat-to-beat intervals from a connected chest strap into Health
+          so they sit alongside your watch data.
+        NSBluetoothAlwaysUsageDescription: >-
+          Nocturne connects to a Bluetooth heart rate strap to record beat-to-beat
+          intervals overnight. Apple Watch does not make that data available to apps.
+    entitlements:
+      path: Apps/Nocturne/Resources/Nocturne.entitlements
+      properties:
+        com.apple.developer.healthkit: true
+        com.apple.developer.healthkit.background-delivery: true
+
+  NocturneWatch:
+    type: application
+    supportedDestinations: [watchOS]
+    sources:
+      - path: Apps/NocturneWatch
+      - path: Apps/Shared
+    dependencies:
+      - target: HRVKit
+        embed: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.nocturne.Nocturne.watchkitapp
+        PRODUCT_NAME: Nocturne
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "4"
+    info:
+      path: Apps/NocturneWatch/Info.plist
+      properties:
+        CFBundleDisplayName: Nocturne
+        WKApplication: true
+        WKCompanionAppBundleIdentifier: app.nocturne.Nocturne
+        WKBackgroundModes:
+          - workout-processing
+        NSHealthShareUsageDescription: >-
+          Nocturne reads heart rate and heart rate variability data recorded by your watch.
+        NSHealthUpdateUsageDescription: >-
+          Nocturne saves beat-to-beat intervals from a connected chest strap into Health.
+        NSBluetoothAlwaysUsageDescription: >-
+          Nocturne connects to a Bluetooth heart rate strap to record beat-to-beat intervals.
+    entitlements:
+      path: Apps/NocturneWatch/NocturneWatch.entitlements
+      properties:
+        com.apple.developer.healthkit: true
+
+schemes:
+  Nocturne:
+    build:
+      targets:
+        Nocturne: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - HRVKitTests
