@@ -38,6 +38,7 @@ server/                Ingest and query API for multi-participant studies. 43 te
 docs/METHODS.md        What the app computes and what it refuses to.
 docs/API.md            The sync API, and why the arrow points from device to server.
 docs/CRITERION_COMPARISON.md  Running an agreement analysis, and what breaks one.
+docs/HUB_INTEGRATION.md  Serving RMSSD to an external system over HTTP.
 docs/RUNNING_A_STUDY.md  Distribution, consent, retention, and the remaining gaps.
 project.yml            XcodeGen spec — the Xcode project is generated, not committed.
 ```

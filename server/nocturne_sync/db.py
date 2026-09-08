@@ -151,6 +151,11 @@ class NightAnalysis(Base):
     # The full NightSummary as the device computed it, plus the configuration itself.
     summary: Mapped[dict[str, Any]] = mapped_column(JSON)
     config: Mapped[dict[str, Any]] = mapped_column(JSON)
+    # HealthKit source bundle identifiers that contributed beats to this night, e.g.
+    # ["com.apple.health"]. Reported by the uploading device, which is the only place that
+    # knows: night boundaries are computed in the participant's local time and this service
+    # does not store their timezone, so it cannot re-derive the attribution itself.
+    sources: Mapped[list[Any]] = mapped_column(JSON, default=list)
 
     __table_args__ = (
         UniqueConstraint(

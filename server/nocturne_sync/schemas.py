@@ -95,6 +95,7 @@ class NightAnalysisIn(BaseModel):
     analysed_at: dt.datetime
     summary: dict[str, Any]
     config: dict[str, Any]
+    sources: list[str] = Field(default_factory=list, max_length=32)
 
     _aware_analysed = field_validator("analysed_at")(_require_aware)
 

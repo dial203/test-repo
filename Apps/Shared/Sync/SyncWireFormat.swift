@@ -71,6 +71,14 @@ enum SyncWire {
         let config_hash: String
         let hrvkit_version: String
         let analysed_at: Date
+        /// HealthKit source bundle identifiers that contributed beats to this night.
+        ///
+        /// Reported from the device because it is the only place that can: night
+        /// boundaries are computed in the participant's local time, and the server does
+        /// not store their timezone, so it cannot re-derive which samples fell inside a
+        /// night. Without this a consumer cannot tell a watch-derived RMSSD from one
+        /// backed by a chest strap written into HealthKit by this same app.
+        let sources: [String]
         let summary: NightSummary
         let config: NightAnalysisConfiguration
     }

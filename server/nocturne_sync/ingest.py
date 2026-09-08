@@ -210,6 +210,7 @@ async def ingest(
                     analysed_at=n.analysed_at,
                     summary=n.summary,
                     config=n.config,
+                    sources=n.sources,
                 )
             )
             accepted["nights"] += 1

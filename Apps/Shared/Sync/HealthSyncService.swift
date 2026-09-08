@@ -75,6 +75,7 @@ final class HealthSyncService {
                     config_hash: hash,
                     hrvkit_version: HRVKitVersion.current,
                     analysed_at: night.analysedAt,
+                    sources: Array(Set(night.rawSeries.compactMap(\.sourceIdentifier))).sorted(),
                     summary: night.summary,
                     config: night.configuration
                 )

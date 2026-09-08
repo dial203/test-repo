@@ -165,7 +165,13 @@ All researcher scope. Every call is written to an audit log.
 | `GET /v1/participants/{code}/nights` | every analysis revision; `config_hash=` to pin one |
 | `GET /v1/participants/{code}/beats.csv` | one row per beat, streamed |
 | `GET /v1/export/nights.csv` | one row per participant-night, whole study |
+| `GET /v1/metrics` | **flat one-row-per-night feed — the one to poll** |
+| `GET /v1/metrics.csv` | the same rows as CSV |
 | `GET /v1/audit` | who read what, when |
+
+`/v1/metrics` exists because everything else here returns the full nested analysis, which
+is right for reanalysis and wrong for a consumer that wants to join RMSSD onto its own
+table. See [HUB_INTEGRATION.md](HUB_INTEGRATION.md).
 
 Beats are not included in the JSON series listing unless asked for: a year of chest-strap
 nights is tens of millions of beats and nobody means to pull that into a list by accident.

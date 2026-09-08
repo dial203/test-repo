@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import datetime as dt
 import io
+import math
 from typing import Any, Iterable, Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -382,3 +383,167 @@ def audit(
         }
         for r in rows
     ]
+
+
+# --- Flat metric feed ----------------------------------------------------------------
+
+
+@router.get("/metrics")
+def metrics(
+    participant: Optional[str] = Query(default=None, description="Participant code; omit for the whole study."),
+    frm: Optional[str] = Query(
+        default=None, alias="from", pattern=r"^\d{4}-\d{2}-\d{2}$",
+        description="Earliest night_of, inclusive (yyyy-MM-dd).",
+    ),
+    to: Optional[str] = Query(
+        default=None, pattern=r"^\d{4}-\d{2}-\d{2}$",
+        description="Latest night_of, inclusive (yyyy-MM-dd).",
+    ),
+    config_hash: Optional[str] = Query(
+        default=None, description="Pin one preprocessing configuration."
+    ),
+    all_revisions: bool = Query(
+        default=False,
+        description=(
+            "Return every analysis revision of a night instead of only the most recently "
+            "analysed one."
+        ),
+    ),
+    limit: int = Query(default=500, le=5000, ge=1),
+    principal: Principal = Depends(require_researcher),
+    db: Session = Depends(get_db),
+) -> list[dict[str, Any]]:
+    """One flat row per participant-night. This is the feed to poll.
+
+    Everything else in this API returns the full nested analysis, which is right for
+    reanalysis and wrong for a consumer that wants to join RMSSD onto its own table. Here
+    the fields are scalars, the key is `(participant_code, night_of)`, and the units are in
+    the field names.
+
+    Two behaviours worth knowing about, both there to keep a consumer's history stable:
+
+    **Revisions.** A night re-analysed under different preprocessing is stored as a
+    separate row, so a night can have several. By default this returns only the most
+    recently analysed one and reports `revision_count` so a consumer can see when others
+    exist; `all_revisions=true` returns them all. It never silently averages them.
+
+    **`config_hash` is in every row.** If it changes between two polls, the number changed
+    because the preprocessing changed, not because the participant did. A consumer that
+    stores the hash alongside the value can tell those two cases apart, which is otherwise
+    impossible after the fact.
+    """
+    stmt = select(NightAnalysis, Participant).join(
+        Participant, Participant.code == NightAnalysis.participant_code
+    )
+    if principal.study_id is not None:
+        stmt = stmt.where(Participant.study_id == principal.study_id)
+    if participant is not None:
+        researcher_may_read(db, principal, participant)
+        stmt = stmt.where(NightAnalysis.participant_code == participant)
+    if frm is not None:
+        stmt = stmt.where(NightAnalysis.night_of >= frm)
+    if to is not None:
+        stmt = stmt.where(NightAnalysis.night_of <= to)
+    if config_hash is not None:
+        stmt = stmt.where(NightAnalysis.config_hash == config_hash)
+
+    rows = db.execute(
+        stmt.order_by(
+            NightAnalysis.participant_code,
+            NightAnalysis.night_of,
+            NightAnalysis.analysed_at,
+        )
+    ).all()
+
+    # Group by (participant, night) so revisions can be counted and, by default, collapsed
+    # to the latest.
+    grouped: dict[tuple[str, str], list[Any]] = {}
+    for night, _ in rows:
+        grouped.setdefault((night.participant_code, night.night_of), []).append(night)
+
+    def row_for(night: Any, revisions: int) -> dict[str, Any]:
+        summary = night.summary or {}
+
+        def value(key: str) -> Optional[float]:
+            """Scalar or null. Never a non-finite number, and never a string.
+
+            "No number" is a real state here: an empty night, or a metric the window count
+            cannot support. The analysis represents it as NaN, and the Swift client encodes
+            non-finite doubles as the strings "NaN" / "Infinity" / "-Infinity" because JSON
+            has no literal for them. Both forms have to collapse to null — a consumer that
+            received the string "NaN" where it expected a float would either crash or, much
+            worse, coerce it to something.
+            """
+            raw = summary.get(key)
+            if isinstance(raw, str):
+                return None
+            if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+                return None
+            value = float(raw)
+            return None if math.isnan(value) or math.isinf(value) else value
+
+        return {
+            "participant_code": night.participant_code,
+            "night_of": night.night_of,
+            "rmssd_ms": value("rmssd"),
+            "ln_rmssd": value("lnRMSSD"),
+            "sdnn_ms": value("sdnn"),
+            "mean_hr_bpm": value("meanHR"),
+            "min_hr_bpm": value("minHR"),
+            "pnn50_pct": value("pnn50"),
+            "sd1_ms": value("sd1"),
+            "sd2_ms": value("sd2"),
+            "aggregation": "median_of_windows",
+            "window_count": summary.get("usedWindowCount"),
+            "coverage_s": value("coverage"),
+            "artifact_fraction": value("artifactFraction"),
+            "quality": summary.get("quality"),
+            "sources": night.sources or [],
+            "config_hash": night.config_hash,
+            "hrvkit_version": night.hrvkit_version,
+            "analysed_at": epoch(night.analysed_at),
+            "received_at": epoch(night.received_at),
+            "revision_count": revisions,
+        }
+
+    out: list[dict[str, Any]] = []
+    for revisions in grouped.values():
+        chosen = revisions if all_revisions else [revisions[-1]]
+        for night in chosen:
+            out.append(row_for(night, len(revisions)))
+    out.sort(key=lambda r: (r["participant_code"], r["night_of"], r["analysed_at"]))
+
+    log_access(db, principal, "GET /v1/metrics", participant, len(out))
+    return out[:limit]
+
+
+@router.get("/metrics.csv")
+def metrics_csv(
+    participant: Optional[str] = Query(default=None),
+    frm: Optional[str] = Query(default=None, alias="from", pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    to: Optional[str] = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    config_hash: Optional[str] = Query(default=None),
+    principal: Principal = Depends(require_researcher),
+    db: Session = Depends(get_db),
+):
+    """The same feed as CSV, for a consumer that would rather read a file than JSON."""
+    rows = metrics(
+        participant=participant, frm=frm, to=to, config_hash=config_hash,
+        all_revisions=False, limit=5000, principal=principal, db=db,
+    )
+    header = [
+        "participant_code", "night_of", "rmssd_ms", "ln_rmssd", "sdnn_ms", "mean_hr_bpm",
+        "min_hr_bpm", "pnn50_pct", "sd1_ms", "sd2_ms", "aggregation", "window_count",
+        "coverage_s", "artifact_fraction", "quality", "sources", "config_hash",
+        "hrvkit_version", "analysed_at", "revision_count",
+    ]
+
+    def generate():
+        for row in rows:
+            yield [
+                "|".join(row[key]) if key == "sources" else
+                (row[key].isoformat() if key == "analysed_at" and row[key] else row[key])
+                for key in header
+            ]
+
+    return _stream_csv(header, generate(), filename="rmssd.csv")
