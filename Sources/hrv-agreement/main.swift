@@ -137,6 +137,9 @@ func describe(_ options: Options) {
             print("units detected     \(provenance.detectedUnits.rawValue) (median raw value \(f(provenance.medianRawValue, 3)))")
             print("intervals read     \(provenance.rowsRead)")
             print("rows skipped       \(provenance.rowsSkipped)")
+            if let gapColumn = provenance.gapColumnName {
+                print("gap flag column    \(gapColumn) (\(provenance.flaggedGapCount) flagged)")
+            }
             if let timestamp = provenance.timestampColumnName,
                provenance.usedTimestampsForPlacement {
                 print("anchored by        \(timestamp) (used to place beats)")
@@ -175,6 +178,89 @@ func describe(_ options: Options) {
     print("pNN50              \(f(whole.pnn50, 1))%")
     print("SD1 / SD2          \(f(whole.sd1, 1)) / \(f(whole.sd2, 1)) ms")
     print("NN / differences   \(whole.nnCount) / \(whole.differenceCount)")
+
+    // How much of the reported value is the preprocessing rather than the physiology.
+    // On a high-variability record these differ by tens of percent, and a single number
+    // with no sensitivity attached invites a reader to assume it is a measurement.
+    heading("Sensitivity to preprocessing")
+    struct Variant { let label: String; let config: PreprocessingConfiguration }
+    var published = PreprocessingConfiguration.standard
+    published.corrector = .publishedExactly
+    var flagOnly = PreprocessingConfiguration.standard
+    flagOnly.corrector.longShortPolicy = .flagOnly
+    let variants = [
+        Variant(label: "raw, no gate", config: {
+            var c = PreprocessingConfiguration.rawWithRangeGateOnly
+            c.minNN = 0; c.maxNN = .greatestFiniteMagnitude
+            return c
+        }()),
+        Variant(label: "range gate only", config: .rawWithRangeGateOnly),
+        Variant(label: "corrected (default)", config: .standard),
+        Variant(label: "long/short flagged", config: flagOnly),
+        Variant(label: "published exactly", config: published),
+    ]
+    print("policy                 NN      RMSSD     SDNN   corrected")
+    for variant in variants {
+        let c = Preprocessor.clean(series, configuration: variant.config)
+        let m = TimeDomain.metrics(for: c.segments)
+        print(String(
+            format: "%-20s %7d %8.1f %8.1f %8.2f%%",
+            (variant.label as NSString).utf8String!, m.nnCount, m.rmssd, m.sdnn,
+            c.report.artifactFraction * 100
+        ))
+    }
+    let defaultMetrics = TimeDomain.metrics(for: Preprocessor.clean(series).segments)
+    let gatedMetrics = TimeDomain.metrics(
+        for: Preprocessor.clean(series, configuration: .rawWithRangeGateOnly).segments
+    )
+    if gatedMetrics.rmssd.isFinite, defaultMetrics.rmssd.isFinite {
+        let shift = abs(defaultMetrics.rmssd - gatedMetrics.rmssd) / gatedMetrics.rmssd * 100
+        if shift > 10 {
+            print("")
+            print("  ⚠ artifact correction moves RMSSD by \(f(shift, 1))%. On a record with")
+            print("    genuinely large variability that is as likely to be the correction")
+            print("    reshaping real physiology as it is to be artifact removal. Inspect the")
+            print("    long intervals before choosing a policy, and report which you used.")
+        }
+    }
+
+    // What share of the reported RMSSD comes from a handful of large events rather than
+    // from beat-to-beat modulation. This is usually the most informative single number
+    // about an overnight record.
+    if let diagnostics = TransientDiagnostics.compute(for: cleaned.segments) {
+        heading("Transient contribution (|ΔNN| > \(f(diagnostics.threshold, 0)) ms)")
+        print("transients         \(diagnostics.transientCount) of \(diagnostics.differenceCount) "
+            + "differences (\(f(diagnostics.transientFraction * 100, 2))%)")
+        print("largest ΔNN        \(f(diagnostics.largestDifference, 0)) ms")
+        print("RMSSD              \(f(diagnostics.rmssd, 1)) ms")
+        print("RMSSD excl. those  \(f(diagnostics.rmssdExcludingTransients, 1)) ms")
+        print("variance share     \(f(diagnostics.varianceShare * 100, 1))%")
+        if diagnostics.isTransientDominated {
+            print("")
+            print("  ⚠ \(f(diagnostics.transientFraction * 100, 2))% of differences carry "
+                + "\(f(diagnostics.varianceShare * 100, 0))% of the RMSSD variance.")
+            print("    Most such events are real — arousals, position changes, sighs — but they")
+            print("    are not the vagal tone RMSSD is standing in for, and artifact correction")
+            print("    will not remove them because they are not artifacts. A pooled whole-night")
+            print("    RMSSD here is closer to an arousal count. Report the median of short")
+            print("    stable windows instead.")
+        }
+    }
+
+    if let regimes = RegimeSplit.describe(cleaned.segments) {
+        heading("Variability regime across the night")
+        print("5-min windows      \(regimes.windows.count)")
+        print("RMSSD spread       \(f(regimes.rmssdSpread, 1))x (10th to 90th percentile)")
+        print("between-window CV  \(f(regimes.coefficientOfVariation, 1))%")
+        if regimes.rmssdSpread > 2.5 {
+            print("")
+            print("  ⚠ RMSSD varies \(f(regimes.rmssdSpread, 1))-fold across the night, so this")
+            print("    record is not one population. A single nightly value averages across")
+            print("    distinct states and will move between nights with how much of each state")
+            print("    a night happened to contain, independently of any change in you.")
+            print("    Restrict to staged sleep, or report per-state values.")
+        }
+    }
 
     // Five-minute windows: what a continuous criterion record can support and a 60 s
     // watch window cannot.

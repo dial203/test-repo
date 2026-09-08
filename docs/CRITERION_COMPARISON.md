@@ -31,6 +31,24 @@ Units are inferred, never guessed: 250–2500 ms and 0.25–2.5 s are accepted, 
 else is refused rather than scaled. A silent factor-of-1000 error produces a perfectly
 plausible RMSSD.
 
+### Formats confirmed against real files
+
+Both Polar export paths were checked against the same night and produce **byte-identical**
+RR series, 28,220 intervals value for value:
+
+| Source | Shape |
+|---|---|
+| Polar v4 API (session pull) | single column of interval durations in ms, no header |
+| Polar Flow manual export | `duration,offline` — interval in ms, plus a flag |
+
+The `offline` flag marks a sample the strap recorded to its own memory while the stream was
+interrupted. That is the same information HealthKit carries as `precededByGap`: the interval
+ending at that beat did not come from two consecutively detected beats, so it is not a valid
+NN interval. It is read as a gap marker, and the segment breaks there.
+
+Because the two paths agree exactly, an automated API pull needs no manual export to back
+it up.
+
 ## Running the comparison
 
 ```sh

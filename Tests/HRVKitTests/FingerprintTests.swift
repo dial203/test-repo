@@ -91,7 +91,7 @@ final class ConfigurationFingerprintTests: XCTestCase {
     func testStandardConfigurationHashIsPinned() {
         XCTAssertEqual(
             ConfigurationFingerprint.hash(.standard),
-            "e856a6e22faf7725",
+            "ad03842e11fa51a1",
             """
             The fingerprint of the standard configuration changed. If that was intentional \
             (a field added or renamed), update this literal and record it — every night \

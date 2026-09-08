@@ -108,18 +108,64 @@ public enum AdaptiveArtifactCorrector {
         /// behaviour on real data, where `alpha` × QD is an order of magnitude larger and
         /// the floor never binds.
         public var minimumThreshold: Double = 0.020
+        /// How far `RR/2` may sit from the local median before a long interval stops
+        /// counting as a missed beat. **A second deliberate deviation from the published
+        /// algorithm, and the one that matters most on high-HRV recordings.**
+        ///
+        /// The published missed-beat test is `|RR/2 − median| < th2`, where `th2` is
+        /// `alpha` × the quartile deviation of the mRR distribution. That threshold scales
+        /// with the record's own variability, so on a recording with large genuine
+        /// variability it becomes vacuous. Measured on a real overnight chest-strap file
+        /// with profound nocturnal bradycardia, `th2` reached 22% of the local interval at
+        /// the median and 42% at the 95th percentile, and the test accepted 114 long
+        /// intervals as missed beats when only 6 had `RR/2` anywhere near the local median.
+        /// The other 108 had ratios of 1.3–1.7 — physiological transients, not two beats
+        /// merged — and splitting those fabricates beats that never occurred while
+        /// destroying the variability that made them interesting.
+        ///
+        /// A genuine single missed beat has `RR/2 ≈ median`. The default 0.15 accepts
+        /// ratios of roughly 1.7–2.3 and rejects the rest, which is a discrimination the
+        /// variability-scaled threshold cannot make on its own. Set it to `.infinity` to
+        /// reproduce the published behaviour exactly.
+        public var maximumRelativeDeviation: Double = 0.15
+        /// What to do with beats that reach the long/short class.
+        public var longShortPolicy: LongShortPolicy = .interpolate
+
+        /// Long/short is the algorithm's "could not classify" bucket, so it is the class
+        /// whose correction is least well justified. Interpolating it matches the published
+        /// algorithm and Kubios; flagging it leaves genuinely variable beats alone at the
+        /// cost of leaving real artifacts in. On a high-HRV record the two answers differ
+        /// enough that the choice should be explicit.
+        public enum LongShortPolicy: String, Sendable, Codable {
+            /// Move the beat to the midpoint of its neighbours (published behaviour).
+            case interpolate
+            /// Count it, report it, change nothing.
+            case flagOnly
+        }
 
         public init() {}
         public init(c1: Double, c2: Double, alpha: Double, windowWidth: Int,
-                    medianFilterOrder: Int, maxIterations: Int, minimumThreshold: Double = 0.020) {
+                    medianFilterOrder: Int, maxIterations: Int, minimumThreshold: Double = 0.020,
+                    maximumRelativeDeviation: Double = 0.15,
+                    longShortPolicy: LongShortPolicy = .interpolate) {
             self.c1 = c1; self.c2 = c2; self.alpha = alpha
             self.windowWidth = windowWidth
             self.medianFilterOrder = medianFilterOrder
             self.maxIterations = maxIterations
             self.minimumThreshold = minimumThreshold
+            self.maximumRelativeDeviation = maximumRelativeDeviation
+            self.longShortPolicy = longShortPolicy
         }
 
         public static let standard = Configuration()
+
+        /// The published algorithm with no additional guards, for comparison.
+        public static var publishedExactly: Configuration {
+            var c = Configuration()
+            c.maximumRelativeDeviation = .infinity
+            c.minimumThreshold = 0
+            return c
+        }
     }
 
     struct Detection {
@@ -154,7 +200,7 @@ public enum AdaptiveArtifactCorrector {
             report.missed += detection.missed.count
             report.extra += detection.extra.count
             report.longShort += detection.longShort.count
-            peaks = apply(detection, to: peaks)
+            peaks = apply(detection, to: peaks, policy: configuration.longShortPolicy)
         }
         return (peaks, report)
     }
@@ -248,8 +294,16 @@ public enum AdaptiveArtifactCorrector {
                 let eq5 = drrs[j] < -1 && s22[j] > 1      // short
                 if !(eq3 || eq4 || eq5) { i += 1; continue }
 
-                let eq6 = abs(rr[j] / 2 - medrr[j]) < th2[j]                 // missed beat
-                let eq7 = abs(rr[j] + rr[j + 1] - medrr[j]) < th2[j]         // extra beat
+                // A missed or extra beat is only credible when the reconstructed interval
+                // lands near the local median in *relative* terms. th2 alone scales with
+                // the record's variability and stops discriminating on high-HRV data.
+                let relativeLimit = c.maximumRelativeDeviation.isFinite
+                    ? c.maximumRelativeDeviation * medrr[j]
+                    : Double.infinity
+                let missedTolerance = min(th2[j], relativeLimit)
+                let extraTolerance = min(th2[j], relativeLimit)
+                let eq6 = abs(rr[j] / 2 - medrr[j]) < missedTolerance         // missed beat
+                let eq7 = abs(rr[j] + rr[j + 1] - medrr[j]) < extraTolerance  // extra beat
 
                 if eq5 && eq7 { det.extra.append(j); i += 1; continue }
                 if eq3 && eq6 { det.missed.append(j); i += 1; continue }
@@ -271,7 +325,10 @@ public enum AdaptiveArtifactCorrector {
 
     // MARK: - Correction
 
-    static func apply(_ detection: Detection, to peaks: [Double]) -> [Double] {
+    static func apply(
+        _ detection: Detection, to peaks: [Double],
+        policy: Configuration.LongShortPolicy = .interpolate
+    ) -> [Double] {
         var peaks = peaks
         var missed = detection.missed
         var ectopic = detection.ectopic
@@ -298,7 +355,8 @@ public enum AdaptiveArtifactCorrector {
             longShort = shift(longShort, after: valid, by: 1)
         }
 
-        for group in [ectopic, longShort] where !group.isEmpty {
+        let toInterpolate = policy == .interpolate ? [ectopic, longShort] : [ectopic]
+        for group in toInterpolate where !group.isEmpty {
             peaks = interpolateMisaligned(group, peaks: peaks)
         }
         return peaks

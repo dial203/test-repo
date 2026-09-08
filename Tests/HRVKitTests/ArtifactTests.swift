@@ -178,3 +178,94 @@ extension ArtifactTests {
         }
     }
 }
+
+extension ArtifactTests {
+
+    /// Regression test for a defect found on a real overnight chest-strap recording.
+    ///
+    /// A fit person asleep shows profound bradycardia with genuine transients: an interval
+    /// 1.3–1.7× its neighbours, followed by a *gradual* return over many beats. That is a
+    /// real vagal surge, not two beats merged into one.
+    ///
+    /// The published missed-beat test is `|RR/2 − median| < th2`, and `th2` scales with the
+    /// record's variability — so on a record whose variability is genuinely large, the test
+    /// stops discriminating and classifies these transients as missed beats. Splitting them
+    /// inserts beats that never occurred. On the real file this fired 114 times where only
+    /// 6 intervals had a ratio anywhere near 2.0.
+    func testGenuineBradycardicTransientsAreNotSplitAsMissedBeats() {
+        // A high-variability record: slow mean rate, large RSA, plus periodic transients
+        // that rise sharply and decay over several beats.
+        var rng = SplitMix64(seed: 8080)
+        var intervals: [Double] = []
+        for beat in 0 ..< 1200 {
+            var nn = 1250 + 120 * sin(2 * .pi * 0.16 * Double(beat)) + 40 * rng.gaussian()
+            // Every ~60 beats, a genuine transient: +55% then a gradual return.
+            let phase = beat % 60
+            if phase < 8 {
+                nn *= 1.0 + 0.55 * exp(-Double(phase) / 2.5)
+            }
+            intervals.append(nn)
+        }
+
+        let peaks = Synthetic.peaks(from: intervals)
+        let guarded = AdaptiveArtifactCorrector.correct(peakTimes: peaks)
+        let published = AdaptiveArtifactCorrector.correct(
+            peakTimes: peaks, configuration: .publishedExactly
+        )
+
+        // The published form treats the transients as dropped beats and inserts beats
+        // that were never recorded.
+        XCTAssertGreaterThan(
+            published.peaks.count, peaks.count,
+            "the unguarded form is expected to fabricate beats on this record"
+        )
+        // The guard must not.
+        XCTAssertLessThanOrEqual(
+            guarded.peaks.count, peaks.count,
+            "the relative-plausibility guard must not insert beats into genuine transients"
+        )
+        XCTAssertLessThan(guarded.report.missed, published.report.missed)
+    }
+
+    /// The guard must not cost real missed-beat detection: a genuine dropped beat has a
+    /// ratio near 2.0, which it accepts.
+    func testGuardStillCatchesGenuineDroppedBeats() {
+        let clean = Synthetic.tachogram(beats: 500, meanNN: 1090, rsaAmplitude: 45,
+                                        respirationHz: 0.22, noiseSD: 12, seed: 606)
+        var peaks = Synthetic.peaks(from: clean)
+        for index in [400, 300, 200, 100] { peaks.remove(at: index) }
+
+        let (corrected, report) = AdaptiveArtifactCorrector.correct(peakTimes: peaks)
+        XCTAssertGreaterThanOrEqual(report.missed, 3, "genuine dropped beats must still be found")
+
+        let cleanRMSSD = TimeDomain.metrics(intervalsMS: clean).rmssd
+        let correctedRMSSD = TimeDomain.metrics(
+            intervalsMS: Synthetic.intervals(fromPeaks: corrected)
+        ).rmssd
+        XCTAssertEqual(correctedRMSSD, cleanRMSSD, accuracy: cleanRMSSD * 0.12)
+    }
+
+    func testLongShortPolicyChangesWhetherBeatsAreMoved() {
+        let clean = Synthetic.tachogram(beats: 600, meanNN: 1200, rsaAmplitude: 90,
+                                        respirationHz: 0.18, noiseSD: 30, seed: 909)
+        let peaks = Synthetic.peaks(from: clean)
+
+        var flagOnly = AdaptiveArtifactCorrector.Configuration.standard
+        flagOnly.longShortPolicy = .flagOnly
+
+        let interpolated = AdaptiveArtifactCorrector.correct(peakTimes: peaks)
+        let flagged = AdaptiveArtifactCorrector.correct(peakTimes: peaks, configuration: flagOnly)
+
+        // Both see the same beats; only one moves them.
+        if interpolated.report.longShort > 0 {
+            let movedRMSSD = TimeDomain.metrics(
+                intervalsMS: Synthetic.intervals(fromPeaks: interpolated.peaks)
+            ).rmssd
+            let untouchedRMSSD = TimeDomain.metrics(
+                intervalsMS: Synthetic.intervals(fromPeaks: flagged.peaks)
+            ).rmssd
+            XCTAssertNotEqual(movedRMSSD, untouchedRMSSD, accuracy: 1e-9)
+            XCTAssertGreaterThan(flagged.report.longShort, 0, "flagOnly must still count them")
+        }
+    }
+}

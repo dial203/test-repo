@@ -48,6 +48,8 @@ public struct RRImport: Sendable {
         public let rowsSkipped: Int
         /// Set when a timestamp column was found and used to anchor the series.
         public let timestampColumnName: String?
+        /// Column that flagged interrupted samples, e.g. Polar Flow's `offline`.
+        public let gapColumnName: String?
         /// Whether per-row timestamps were used to place the beats.
         ///
         /// This is the difference between a file that reconstructs correctly and one that
@@ -61,6 +63,8 @@ public struct RRImport: Sendable {
         public let gapCount: Int
         /// Total time the gaps account for, seconds.
         public let gapDuration: TimeInterval
+        /// Gaps the file itself flagged, as distinct from those inferred from timestamps.
+        public let flaggedGapCount: Int
     }
 
     public let intervalsMS: [Double]
@@ -100,12 +104,23 @@ public struct RRImport: Sendable {
         // Prefer a column whose header names an interval; otherwise the last numeric one.
         var intervalIndex: Int?
         var timestampIndex: Int?
+        var gapIndex: Int?
         for (index, field) in headerFields.enumerated() {
             let name = field.lowercased()
             if intervalIndex == nil,
                name.contains("rr") || name.contains("ibi") || name.contains("interval")
-                   || name.contains("nn") || name.contains("beat") {
+                   || name.contains("nn") || name.contains("beat")
+                   // Polar Flow's manual RR export heads the interval column "duration".
+                   || name == "duration" {
                 intervalIndex = index
+            }
+            if gapIndex == nil, name == "offline" || name.contains("gap") {
+                // Polar marks a sample "offline" where the stream was interrupted and the
+                // beat came from the strap's own memory. That is the same information
+                // HealthKit carries as precededByGap: the interval ending at this beat did
+                // not come from two consecutively detected beats, so it is not a valid NN
+                // interval and no successive difference may be taken across it.
+                gapIndex = index
             }
             if timestampIndex == nil,
                name.contains("time") || name.contains("date") || name.contains("timestamp") {
@@ -116,6 +131,7 @@ public struct RRImport: Sendable {
         var values: [Double] = []
         // Parallel to `values`; nil where a row carried no parseable timestamp.
         var timestamps: [Date?] = []
+        var flaggedGaps: [Bool] = []
         var skipped = 0
 
         for line in lines[bodyStart...] {
@@ -139,6 +155,12 @@ public struct RRImport: Sendable {
                 timestamps.append(parseTimestamp(fields[timestampIndex]))
             } else {
                 timestamps.append(nil)
+            }
+            if let gapIndex, gapIndex < fields.count {
+                let flag = fields[gapIndex].lowercased()
+                flaggedGaps.append(flag == "true" || flag == "1" || flag == "yes")
+            } else {
+                flaggedGaps.append(false)
             }
         }
 
@@ -165,7 +187,9 @@ public struct RRImport: Sendable {
         // what the sensor actually measured and is higher precision than a timestamp
         // column that may only be second-resolution. Timestamps are used for the thing
         // intervals cannot tell you: where the recording stopped and restarted.
-        let placement = placeBeats(intervalsMS: intervalsMS, timestamps: timestamps)
+        let placement = placeBeats(
+            intervalsMS: intervalsMS, timestamps: timestamps, flaggedGaps: flaggedGaps
+        )
         let anchor = timestamps.compactMap { $0 }.first ?? start
 
         return RRImport(
@@ -185,9 +209,13 @@ public struct RRImport: Sendable {
                 timestampColumnName: timestampIndex.flatMap {
                     $0 < headerFields.count ? headerFields[$0] : nil
                 },
+                gapColumnName: gapIndex.flatMap {
+                    $0 < headerFields.count ? headerFields[$0] : nil
+                },
                 usedTimestampsForPlacement: placement.usedTimestamps,
                 gapCount: placement.gapCount,
-                gapDuration: placement.gapDuration
+                gapDuration: placement.gapDuration,
+                flaggedGapCount: placement.flaggedCount
             ),
             start: anchor
         )
@@ -206,9 +234,16 @@ public struct RRImport: Sendable {
         let usedTimestamps: Bool
         let gapCount: Int
         let gapDuration: TimeInterval
+        let flaggedCount: Int
     }
 
-    static func placeBeats(intervalsMS: [Double], timestamps: [Date?]) -> Placement {
+    static func placeBeats(
+        intervalsMS: [Double], timestamps: [Date?], flaggedGaps: [Bool] = []
+    ) -> Placement {
+        func flagged(_ index: Int) -> Bool {
+            index < flaggedGaps.count && flaggedGaps[index]
+        }
+        let flaggedTotal = flaggedGaps.filter { $0 }.count
         let haveTimestamps = timestamps.count == intervalsMS.count
             && timestamps.compactMap { $0 }.count >= max(2, intervalsMS.count * 9 / 10)
 
@@ -218,22 +253,26 @@ public struct RRImport: Sendable {
         var gapDuration: TimeInterval = 0
 
         guard haveTimestamps else {
-            for ms in intervalsMS {
+            for (index, ms) in intervalsMS.enumerated() {
                 offset += ms / 1000.0
-                beats.append(Beat(offset: offset, precededByGap: false))
+                beats.append(Beat(offset: offset, precededByGap: flagged(index)))
             }
-            return Placement(beats: beats, usedTimestamps: false, gapCount: 0, gapDuration: 0)
+            return Placement(
+                beats: beats, usedTimestamps: false, gapCount: flaggedTotal,
+                gapDuration: 0, flaggedCount: flaggedTotal
+            )
         }
 
         var previousTimestamp = timestamps.compactMap { $0 }.first!
         for (index, ms) in intervalsMS.enumerated() {
             let expected = ms / 1000.0
-            var isGap = false
+            var isGap = flagged(index)
+            if isGap { gaps += 1 }
             if let timestamp = timestamps[index] {
                 let observed = timestamp.timeIntervalSince(previousTimestamp)
                 if observed - expected > gapTolerance {
+                    if !isGap { gaps += 1 }
                     isGap = true
-                    gaps += 1
                     gapDuration += observed - expected
                     // Advance by the observed gap so later beats keep their real times.
                     offset += observed
@@ -247,7 +286,8 @@ public struct RRImport: Sendable {
             beats.append(Beat(offset: offset, precededByGap: isGap))
         }
         return Placement(
-            beats: beats, usedTimestamps: true, gapCount: gaps, gapDuration: gapDuration
+            beats: beats, usedTimestamps: true, gapCount: gaps,
+            gapDuration: gapDuration, flaggedCount: flaggedTotal
         )
     }
 
