@@ -33,9 +33,11 @@ Tests/HRVKitTests/     62 tests, validated against analytic anchors.
 Apps/Shared/           HealthKit reads, BLE recorder, night pipeline, study sync.
 Apps/Nocturne/         iOS app (SwiftUI + SwiftData + Swift Charts).
 Apps/NocturneWatch/    watchOS companion.
+Sources/hrv-agreement/ CLI: criterion comparison from exported files, no Xcode needed.
 server/                Ingest and query API for multi-participant studies. 43 tests.
 docs/METHODS.md        What the app computes and what it refuses to.
 docs/API.md            The sync API, and why the arrow points from device to server.
+docs/CRITERION_COMPARISON.md  Running an agreement analysis, and what breaks one.
 docs/RUNNING_A_STUDY.md  Distribution, consent, retention, and the remaining gaps.
 project.yml            XcodeGen spec — the Xcode project is generated, not committed.
 ```
@@ -126,9 +128,31 @@ can pull from directly. Garmin's Health API is enterprise-gated and not self-ser
 individuals. Nothing for those vendors is implemented here — the sync layer is Apple-only
 on purpose.
 
+## Criterion comparison
+
+If you have a chest strap recorded alongside the watch, `hrv-agreement` does the whole
+comparison from exported files — no Xcode, no device:
+
+```sh
+swift run hrv-agreement describe --reference polar-rr.csv     # check the file is real RR
+swift run hrv-agreement compare --test watch-beats.csv --reference polar-rr.csv --bound 3
+```
+
+It estimates and corrects the clock offset between the two recorders, extracts the
+criterion beats over the *same* wall-clock interval as each watch window, and reports
+Bland–Altman limits clustered by night, ratio limits on the log scale, Lin's CCC with a
+cluster bootstrap interval, error metrics and a TOST equivalence test. See
+[docs/CRITERION_COMPARISON.md](docs/CRITERION_COMPARISON.md) — particularly the three
+things that most often make such an analysis meaningless.
+
+Note on Polar: RR export works only for sessions recorded by a Polar *watch* with an ECG
+sensor, not the Beat app or the H10's internal memory. And Polar Flow writes only steps,
+heart rate and workouts to Apple Health — RR never gets there, so the criterion data comes
+from Polar Flow's web export.
+
 ## Validation
 
-`make test` runs 62 Swift tests and 43 server tests. The ones that matter are anchored to values that can be derived
+`make test` runs 100 Swift tests and 43 server tests. The ones that matter are anchored to values that can be derived
 independently rather than to whatever the code happened to produce:
 
 - Lomb–Scargle band power recovers the variance of a known sinusoid (Parseval), so band
@@ -141,6 +165,14 @@ independently rather than to whatever the code happened to produce:
   *single* artifact in 400 beats.
 - The false-positive rate of the corrector on clean data is under 1%.
 - SHA-256 matches all six published NIST vectors, including the one-million-character case.
+- Normal and Student's t quantiles match published critical values; the incomplete beta
+  function satisfies its symmetry identity.
+- End to end, with a known injected bias and clock offset: the pipeline recovers a 37 s
+  offset to within the 1 s search resolution and a 1.08 ratio bias to within 0.03, finds
+  the inter-night gaps from timestamps rather than swallowing them, and reproduces the
+  CCC-versus-correlation gap that a systematic offset should produce.
+- Clustering by night widens the bias interval roughly fourfold against naive pooling, and
+  the variance decomposition recovers simulated within- and between-night SDs.
 
 On the server side: ingest is idempotent under replay, a device token cannot read anything,
 a study-scoped researcher token cannot read another study, naive timestamps and

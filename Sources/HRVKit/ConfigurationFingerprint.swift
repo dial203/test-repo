@@ -25,7 +25,17 @@ public enum ConfigurationFingerprint {
     }
 
     public static func fullHash(_ configuration: NightAnalysisConfiguration) -> String {
-        guard let data = try? canonicalEncoder.encode(configuration) else {
+        fullHash(of: configuration)
+    }
+
+    /// Fingerprint any encodable configuration, so preprocessing settings can be recorded
+    /// and compared on their own — not only as part of a whole night configuration.
+    public static func hash<T: Encodable>(of value: T) -> String {
+        String(fullHash(of: value).prefix(16))
+    }
+
+    public static func fullHash<T: Encodable>(of value: T) -> String {
+        guard let data = try? canonicalEncoder.encode(value) else {
             return String(repeating: "0", count: 64)
         }
         return SHA256.hex(data)
