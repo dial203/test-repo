@@ -29,11 +29,14 @@ recorder built in for exactly that.
 
 ```
 Sources/HRVKit/        Analysis core. No HealthKit, no UIKit, no Apple-only APIs.
-Tests/HRVKitTests/     57 tests, validated against analytic anchors.
-Apps/Shared/           HealthKit reads, BLE recorder, night-building pipeline.
+Tests/HRVKitTests/     62 tests, validated against analytic anchors.
+Apps/Shared/           HealthKit reads, BLE recorder, night pipeline, study sync.
 Apps/Nocturne/         iOS app (SwiftUI + SwiftData + Swift Charts).
 Apps/NocturneWatch/    watchOS companion.
+server/                Ingest and query API for multi-participant studies. 43 tests.
 docs/METHODS.md        What the app computes and what it refuses to.
+docs/API.md            The sync API, and why the arrow points from device to server.
+docs/RUNNING_A_STUDY.md  Distribution, consent, retention, and the remaining gaps.
 project.yml            XcodeGen spec — the Xcode project is generated, not committed.
 ```
 
@@ -43,10 +46,23 @@ without a Mac and the correctness gate in CI runs on Linux.
 ## Build
 
 ```sh
-make test                      # HRVKit test suite — macOS or Linux, no Xcode needed
+make test                      # HRVKit + server suites — macOS or Linux, no Xcode needed
 brew install xcodegen
 make open                      # generate Nocturne.xcodeproj and open it
 ```
+
+For a multi-participant study, the app can also sync to a server you run:
+
+```sh
+make -C server install
+nocturne-admin create-study OSU-HRV-2026 --retention-days 1095
+nocturne-admin add-participants --study OSU-HRV-2026 --count 40
+make -C server run             # local, on :8000
+```
+
+Set `NocturneServerURL` in `project.yml` to point a build at it. Leave it empty and the app
+is entirely local: no sync UI, no network calls, nothing leaves the device. See
+[docs/API.md](docs/API.md) and [docs/RUNNING_A_STUDY.md](docs/RUNNING_A_STUDY.md).
 
 Set your development team in Xcode's Signing & Capabilities, then run on a device.
 HealthKit does not work in the Simulator for heartbeat series.
@@ -99,9 +115,20 @@ Everything, at four levels of granularity: raw beat timestamps with their gap fl
 corrected NN intervals tagged by segment, per-window indices, per-night summaries with
 every alternative aggregation. CSV and JSON. Nothing leaves the device unless you export it.
 
+## Aggregating other sources
+
+There is no Apple cloud API for Health data and there will not be one — HealthKit is
+device-local by design. So "Apple Watch data via an API" inverts: the phone pushes to an
+API you own, and that is what you query. `docs/API.md` covers the shape.
+
+Other wearables are the opposite: Oura and WHOOP both have documented OAuth2 cloud APIs you
+can pull from directly. Garmin's Health API is enterprise-gated and not self-serve for
+individuals. Nothing for those vendors is implemented here — the sync layer is Apple-only
+on purpose.
+
 ## Validation
 
-`make test` runs 57 tests. The ones that matter are anchored to values that can be derived
+`make test` runs 62 Swift tests and 43 server tests. The ones that matter are anchored to values that can be derived
 independently rather than to whatever the code happened to produce:
 
 - Lomb–Scargle band power recovers the variance of a known sinusoid (Parseval), so band
@@ -113,6 +140,12 @@ independently rather than to whatever the code happened to produce:
   10% of the uncorrupted value, while the uncorrected series is inflated by ~30% from a
   *single* artifact in 400 beats.
 - The false-positive rate of the corrector on clean data is under 1%.
+- SHA-256 matches all six published NIST vectors, including the one-million-character case.
+
+On the server side: ingest is idempotent under replay, a device token cannot read anything,
+a study-scoped researcher token cannot read another study, naive timestamps and
+non-monotonic beats are rejected, deletions tombstone rather than remove, and re-analysis
+under new settings appends instead of overwriting.
 
 None of that validates the app against a criterion measure on real people. If you want
 that, record a chest strap through the built-in BLE recorder alongside the watch and

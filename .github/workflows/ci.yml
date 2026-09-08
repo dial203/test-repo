@@ -17,6 +17,18 @@ jobs:
       - run: swift build --build-tests
       - run: swift test
 
+  server:
+    name: Sync server tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e './server[dev]'
+      - run: python -m pytest -q
+        working-directory: server
+
   apps:
     name: App build (macOS)
     runs-on: macos-15

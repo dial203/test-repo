@@ -60,6 +60,9 @@ targets:
       path: Apps/Nocturne/Resources/Info.plist
       properties:
         CFBundleDisplayName: Nocturne
+        # Empty means a purely local install: no sync UI, no network calls, nothing leaves
+        # the device. Set it to your study server's https URL for a study build.
+        NocturneServerURL: ""
         UIBackgroundModes:
           - bluetooth-central
           - processing

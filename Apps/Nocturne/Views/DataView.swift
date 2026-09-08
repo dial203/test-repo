@@ -5,6 +5,11 @@ import HRVKit
 struct DataView: View {
     @Bindable var repository: NightRepository
     @StateObject private var recorder = ExternalSensorRecorder()
+    /// nil until a study server is configured. A personal install has no server and the
+    /// upload section simply does not appear.
+    @State private var sync: HealthSyncService? = ServerConfiguration.current.map {
+        HealthSyncService(client: SyncAPIClient(baseURL: $0))
+    }
     @State private var exportURL: URL?
     @State private var exportError: String?
 
@@ -44,6 +49,7 @@ struct DataView: View {
                     }
                 }
 
+                if let sync { SyncSection(sync: sync, repository: repository) }
                 settingsSection
                 recorderSection
             }
